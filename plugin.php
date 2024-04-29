@@ -3,7 +3,7 @@
 Plugin Name:	JSON Tables
 Plugin URI:		
 Description:	This plugin allows a scheduled cron job to download a JSON from a directory and update the database with the new data. Then allowing a shortcode to embed the table.
-Version:		1.0.1
+Version:		1.0.2
 Author:			E2E Studios
 Author URI:		https://e2estudios.com
 License:		GPL-2.0+
@@ -30,11 +30,11 @@ require 'plugin-update-checker/plugin-update-checker.php';
 $myUpdateChecker = Puc_v4_Factory::buildUpdateChecker(
     'https://github.com/e2es/json-tables',
     __FILE__,
-    'serp'
+    'json-tables'
 );
 
 //Set the branch that contains the stable release.
-$myUpdateChecker->setBranch('master');
+$myUpdateChecker->setBranch('main');
 
 class JsonTables {
     public function __construct() {
