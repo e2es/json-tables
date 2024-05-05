@@ -22,3 +22,6 @@
 
     = 1.0.2 =
     * Updated github directory and tested versions.
+
+    = 1.0.3 =
+    * Added new functionality for AWS S3 Credentials

@@ -3,7 +3,7 @@
 Plugin Name:	JSON Tables
 Plugin URI:		
 Description:	This plugin allows a scheduled cron job to download a JSON from a directory and update the database with the new data. Then allowing a shortcode to embed the table.
-Version:		1.0.2
+Version:		1.0.3
 Author:			E2E Studios
 Author URI:		https://e2estudios.com
 License:		GPL-2.0+
@@ -27,6 +27,7 @@ if (!defined('ABSPATH')) exit; // Exit if accessed directly
 
 
 require 'plugin-update-checker/plugin-update-checker.php';
+require 'aws-sdk-php/aws-autoloader.php';
 $myUpdateChecker = Puc_v4_Factory::buildUpdateChecker(
     'https://github.com/e2es/json-tables',
     __FILE__,
@@ -75,11 +76,48 @@ class JsonTables {
             'default' => 5  // Default interval set to 5 minutes
         ]);
 
+
+
         add_settings_section(
             'json_tables_main_section',
             'Main Settings',
             null,
             'json_tables_settings'
+        );
+
+        add_settings_field(
+            'json_tables_s3_access_key_field',
+            'S3 Access Key',
+            [$this, 'json_tables_s3_access_key_field_html'],
+            'json_tables_settings',
+            'json_tables_main_section'
+        );
+
+        // Add field for Secret Key
+        add_settings_field(
+            'json_tables_s3_secret_key_field',
+            'S3 Secret Key',
+            [$this, 'json_tables_s3_secret_key_field_html'],
+            'json_tables_settings',
+            'json_tables_main_section'
+        );
+
+        // Add field for Bucket Name
+        add_settings_field(
+            'json_tables_s3_bucket_name_field',
+            'S3 Bucket Name',
+            [$this, 'json_tables_s3_bucket_name_field_html'],
+            'json_tables_settings',
+            'json_tables_main_section'
+        );
+
+        // Add field for Region
+        add_settings_field(
+            'json_tables_s3_region_field',
+            'S3 Region',
+            [$this, 'json_tables_s3_region_field_html'],
+            'json_tables_settings',
+            'json_tables_main_section'
         );
 
         add_settings_field(
@@ -94,6 +132,26 @@ class JsonTables {
     public function json_tables_cron_interval_field_html() {
         $interval = get_option('json_tables_cron_interval', 5);
         echo '<input type="number" id="json_tables_cron_interval" name="json_tables_cron_interval" value="' . esc_attr($interval) . '" min="1">';
+    }
+
+    public function json_tables_s3_access_key_field_html() {
+        $access_key = get_option('json_tables_s3_access_key');
+        echo '<input type="text" name="json_tables_s3_access_key" value="' . esc_attr($access_key) . '" />';
+    }
+
+    public function json_tables_s3_secret_key_field_html() {
+        $secret_key = get_option('json_tables_s3_secret_key');
+        echo '<input type="password" name="json_tables_s3_secret_key" value="' . esc_attr($secret_key) . '" />';
+    }
+
+    public function json_tables_s3_bucket_name_field_html() {
+        $bucket_name = get_option('json_tables_s3_bucket_name');
+        echo '<input type="text" name="json_tables_s3_bucket_name" value="' . esc_attr($bucket_name) . '" />';
+    }
+
+    public function json_tables_s3_region_field_html() {
+        $region = get_option('json_tables_s3_region');
+        echo '<input type="text" name="json_tables_s3_region" value="' . esc_attr($region) . '" />';
     }
 
     public function create_admin_page() {
@@ -226,14 +284,46 @@ class JsonTables {
 
         $json_url = get_post_meta($post_id, 'json_url', true);
         if ($json_url) {
-            $response = wp_remote_get($json_url);
-            if (!is_wp_error($response)) {
-                $body = wp_remote_retrieve_body($response);
-                update_post_meta($post_id, 'json_data', $body);
-                update_post_meta($post_id, 'last_imported_date', current_time('mysql'));
+
+            if (get_option('json_tables_s3_access_key')) {
+
+                $response = wp_remote_get($json_url);
+                if (!is_wp_error($response)) {
+                    $body = wp_remote_retrieve_body($response);
+                    update_post_meta($post_id, 'json_data', $body);
+                    update_post_meta($post_id, 'last_imported_date', current_time('mysql'));
+                }
+            } else{
+                $access_key = get_option('json_tables_s3_access_key');
+                $secret_key = get_option('json_tables_s3_secret_key');
+                $bucket_name = get_option('json_tables_s3_bucket_name');
+                $region = get_option('json_tables_s3_region');
+
+                // Use retrieved credentials for S3 operations
+                $s3 = new Aws\S3\S3Client([
+                    'version' => 'latest',
+                    'region' => $region,
+                    'credentials' => [
+                        'key' => $access_key,
+                        'secret' => $secret_key,
+                    ],
+                ]);
+
+                // Assume $json_url contains S3 object URL
+                $response = $s3->getObject([
+                    'Bucket' => $bucket_name,
+                    'Key' => $json_url,
+                ]);
+
+                if ($response['Body']) {
+                    $body = $response['Body']->getContents();
+                    update_post_meta($post_id, 'json_data', $body);
+                    update_post_meta($post_id, 'last_imported_date', current_time('mysql'));
+                        }
+                }
             }
         }
-    }
+
 
     public function render_json_table_shortcode($atts) {
         $atts = shortcode_atts(['id' => ''], $atts);
