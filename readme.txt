@@ -28,3 +28,6 @@
 
     = 1.0.4 =
     * Fixed a bug where it was trying to send AWS security credentials when it was not needed.
+
+    = 1.0.5 =
+    * Added optional table title class to JSON
