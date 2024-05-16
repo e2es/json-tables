@@ -25,3 +25,6 @@
 
     = 1.0.3 =
     * Added new functionality for AWS S3 Credentials
+
+    = 1.0.4 =
+    * Fixed a bug where it was trying to send AWS security credentials when it was not needed.
