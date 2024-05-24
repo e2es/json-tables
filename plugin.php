@@ -3,7 +3,7 @@
 Plugin Name:	JSON Tables
 Plugin URI:		
 Description:	This plugin allows a scheduled cron job to download a JSON from a directory and update the database with the new data. Then allowing a shortcode to embed the table.
-Version:		1.0.5
+Version:		1.0.6
 Author:			E2E Studios
 Author URI:		https://e2estudios.com
 License:		GPL-2.0+
@@ -278,8 +278,8 @@ class JsonTables {
         }
     }
 
-    public function sync_json_data() {
-        $post_id = $_POST['post_id'] ?? 0;
+    public function sync_json_data($post_id) {
+        //$post_id = $_POST['post_id'] ?? 0;
         if (!$post_id) return;
 
         $json_url = get_post_meta($post_id, 'json_url', true);
