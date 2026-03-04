@@ -1,9 +1,9 @@
 <?php
 /*
 Plugin Name:	JSON Tables
-Plugin URI:		
+Plugin URI:
 Description:	This plugin allows a scheduled cron job to download a JSON from a directory and update the database with the new data. Then allowing a shortcode to embed the table.
-Version:		1.0.7
+Version:		1.0.9
 Author:			E2E Studios
 Author URI:		https://e2estudios.com
 License:		GPL-2.0+
@@ -49,6 +49,7 @@ class JsonTables {
         add_filter('cron_schedules', [$this, 'add_cron_interval']);
         add_action('json_tables_sync_hook', [$this, 'perform_cron_job']);
         add_action('admin_post_json_tables_clear_log', [$this, 'handle_clear_log']);
+        add_action('admin_post_json_tables_sync_now', [$this, 'handle_sync_now']);
         register_activation_hook(__FILE__, [$this, 'activate_plugin']);
         register_deactivation_hook(__FILE__, [$this, 'deactivate_plugin']);
 
@@ -172,6 +173,9 @@ class JsonTables {
                 <a href="?page=json_tables_settings&tab=request_log" class="nav-tab <?php echo $active_tab === 'request_log' ? 'nav-tab-active' : ''; ?>">Request Log</a>
             </h2>
             <?php
+            if (!empty($_GET['synced'])) {
+                echo '<div class="notice notice-success is-dismissible"><p>All JSON Tables synced successfully.</p></div>';
+            }
             if ($active_tab === 'request_log') {
                 $this->render_request_log();
             } else {
@@ -182,6 +186,14 @@ class JsonTables {
                     do_settings_sections('json_tables_settings');
                     submit_button();
                     ?>
+                </form>
+                <hr />
+                <h2>Manual Sync</h2>
+                <p>Trigger a sync for all JSON Tables now.</p>
+                <form method="post" action="<?php echo esc_url(admin_url('admin-post.php')); ?>">
+                    <input type="hidden" name="action" value="json_tables_sync_now" />
+                    <?php wp_nonce_field('json_tables_sync_now'); ?>
+                    <input type="submit" class="button button-primary" value="Sync Now" onclick="return confirm('Sync all JSON Tables now?');" />
                 </form>
                 <?php
             }
@@ -233,7 +245,7 @@ class JsonTables {
                     ?>
                         <tr>
                             <td><?php echo esc_html($log->created_at); ?></td>
-                            <td><?php echo esc_html($post_title); ?></td>
+                            <td><a href="<?php echo esc_url(get_edit_post_link($log->post_id)); ?>" target="_blank"><?php echo esc_html($post_title); ?></a></td>
                             <td style="word-break:break-all;"><?php echo esc_html($log->url); ?></td>
                             <td><span style="display:inline-block;padding:2px 8px;border-radius:3px;color:#fff;background:<?php echo $badge_color; ?>;"><?php echo esc_html($log->status); ?></span></td>
                             <td><?php echo esc_html($log->message); ?></td>
@@ -275,6 +287,18 @@ class JsonTables {
         exit;
     }
 
+    public function handle_sync_now() {
+        if (!current_user_can('manage_options')) {
+            wp_die('Unauthorized');
+        }
+        check_admin_referer('json_tables_sync_now');
+
+        $this->perform_cron_job();
+
+        wp_safe_redirect(admin_url('options-general.php?page=json_tables_settings&tab=settings&synced=1'));
+        exit;
+    }
+
     public function add_meta_boxes() {
         add_meta_box('json_table_data', 'JSON Table Data', [$this, 'json_table_data_callback'], 'json_table', 'normal', 'high');
     }
@@ -294,6 +318,48 @@ class JsonTables {
             <label for="json_data">JSON Data:</label>
             <textarea id="json_data" name="json_data" class="widefat" rows="10"><?php echo esc_textarea(get_post_meta($post->ID, 'json_data', true)); ?></textarea>
         </p>
+        <p>
+            <button type="button" class="button" id="toggle_json_preview">Toggle Formatted View</button>
+        </p>
+        <div id="json_preview" style="display:none; background:#f0f0f1; border:1px solid #c3c4c7; border-radius:4px; padding:12px; margin-top:6px; max-height:500px; overflow:auto;">
+            <pre id="json_preview_content" style="margin:0; white-space:pre-wrap; word-wrap:break-word; font-family:monospace; font-size:13px;"></pre>
+        </div>
+        <script>
+            (function(){
+                var preview = document.getElementById('json_preview');
+                var previewContent = document.getElementById('json_preview_content');
+                var textarea = document.getElementById('json_data');
+                var toggleBtn = document.getElementById('toggle_json_preview');
+
+                function renderPreview() {
+                    try {
+                        var parsed = JSON.parse(textarea.value);
+                        previewContent.textContent = JSON.stringify(parsed, null, 2);
+                        previewContent.style.color = '';
+                    } catch(e) {
+                        previewContent.textContent = 'Invalid JSON: ' + e.message;
+                        previewContent.style.color = '#d63638';
+                    }
+                }
+
+                toggleBtn.addEventListener('click', function() {
+                    if (preview.style.display === 'none') {
+                        renderPreview();
+                        preview.style.display = 'block';
+                        toggleBtn.textContent = 'Hide Formatted View';
+                    } else {
+                        preview.style.display = 'none';
+                        toggleBtn.textContent = 'Toggle Formatted View';
+                    }
+                });
+
+                textarea.addEventListener('input', function() {
+                    if (preview.style.display !== 'none') {
+                        renderPreview();
+                    }
+                });
+            })();
+        </script>
         <p>
             <label for="last_imported_date">Last Imported Date:</label>
             <input type="text" id="last_imported_date" name="last_imported_date" value="<?php echo esc_attr(get_post_meta($post->ID, 'last_imported_date', true)); ?>" class="widefat" readonly>
