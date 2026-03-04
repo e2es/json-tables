@@ -3,7 +3,7 @@
 Plugin Name:	JSON Tables
 Plugin URI:		
 Description:	This plugin allows a scheduled cron job to download a JSON from a directory and update the database with the new data. Then allowing a shortcode to embed the table.
-Version:		1.0.6
+Version:		1.0.7
 Author:			E2E Studios
 Author URI:		https://e2estudios.com
 License:		GPL-2.0+
@@ -48,8 +48,15 @@ class JsonTables {
         add_shortcode('json-table', [$this, 'render_json_table_shortcode']);
         add_filter('cron_schedules', [$this, 'add_cron_interval']);
         add_action('json_tables_sync_hook', [$this, 'perform_cron_job']);
+        add_action('admin_post_json_tables_clear_log', [$this, 'handle_clear_log']);
         register_activation_hook(__FILE__, [$this, 'activate_plugin']);
         register_deactivation_hook(__FILE__, [$this, 'deactivate_plugin']);
+
+        // Create log table on update for existing installs
+        if (get_option('json_tables_db_version') !== '1.0.7') {
+            $this->create_log_table();
+            update_option('json_tables_db_version', '1.0.7');
+        }
     }
 
     public function create_custom_post_type() {
@@ -155,18 +162,116 @@ class JsonTables {
     }
 
     public function create_admin_page() {
+        $active_tab = isset($_GET['tab']) ? sanitize_text_field($_GET['tab']) : 'settings';
         ?>
         <div class="wrap">
-            <h2>JSON Tables Settings</h2>
-            <form method="post" action="options.php">
-                <?php
-                settings_fields('json_tables_settings');
-                do_settings_sections('json_tables_settings');
-                submit_button();
+            <h1>JSON Tables</h1>
+            <h2 class="nav-tab-wrapper">
+                <a href="?page=json_tables_settings&tab=settings" class="nav-tab <?php echo $active_tab === 'settings' ? 'nav-tab-active' : ''; ?>">Settings</a>
+                <a href="?page=json_tables_settings&tab=request_log" class="nav-tab <?php echo $active_tab === 'request_log' ? 'nav-tab-active' : ''; ?>">Request Log</a>
+            </h2>
+            <?php
+            if ($active_tab === 'request_log') {
+                $this->render_request_log();
+            } else {
                 ?>
-            </form>
+                <form method="post" action="options.php">
+                    <?php
+                    settings_fields('json_tables_settings');
+                    do_settings_sections('json_tables_settings');
+                    submit_button();
+                    ?>
+                </form>
+                <?php
+            }
+            ?>
         </div>
         <?php
+    }
+
+    public function render_request_log() {
+        global $wpdb;
+        $table_name = $wpdb->prefix . 'json_tables_log';
+
+        $per_page = 50;
+        $paged = isset($_GET['paged']) ? max(1, absint($_GET['paged'])) : 1;
+        $offset = ($paged - 1) * $per_page;
+
+        $total_items = (int) $wpdb->get_var("SELECT COUNT(*) FROM $table_name");
+        $total_pages = ceil($total_items / $per_page);
+
+        $logs = $wpdb->get_results($wpdb->prepare(
+            "SELECT * FROM $table_name ORDER BY created_at DESC LIMIT %d OFFSET %d",
+            $per_page,
+            $offset
+        ));
+
+        $clear_url = wp_nonce_url(admin_url('admin-post.php?action=json_tables_clear_log'), 'json_tables_clear_log');
+        ?>
+        <form method="post" action="<?php echo esc_url($clear_url); ?>" style="margin: 12px 0;">
+            <input type="submit" class="button" value="Clear Log" onclick="return confirm('Are you sure you want to clear the entire log?');" />
+        </form>
+        <table class="wp-list-table widefat fixed striped">
+            <thead>
+                <tr>
+                    <th style="width:150px;">Date</th>
+                    <th style="width:200px;">Table Name</th>
+                    <th>URL</th>
+                    <th style="width:90px;">Status</th>
+                    <th>Message</th>
+                </tr>
+            </thead>
+            <tbody>
+                <?php if (empty($logs)) : ?>
+                    <tr><td colspan="5">No log entries found.</td></tr>
+                <?php else : ?>
+                    <?php foreach ($logs as $log) :
+                        $post_title = get_the_title($log->post_id);
+                        if (!$post_title) $post_title = '#' . $log->post_id;
+                        $badge_color = $log->status === 'success' ? '#00a32a' : '#d63638';
+                    ?>
+                        <tr>
+                            <td><?php echo esc_html($log->created_at); ?></td>
+                            <td><?php echo esc_html($post_title); ?></td>
+                            <td style="word-break:break-all;"><?php echo esc_html($log->url); ?></td>
+                            <td><span style="display:inline-block;padding:2px 8px;border-radius:3px;color:#fff;background:<?php echo $badge_color; ?>;"><?php echo esc_html($log->status); ?></span></td>
+                            <td><?php echo esc_html($log->message); ?></td>
+                        </tr>
+                    <?php endforeach; ?>
+                <?php endif; ?>
+            </tbody>
+        </table>
+        <?php if ($total_pages > 1) : ?>
+            <div class="tablenav bottom">
+                <div class="tablenav-pages">
+                    <span class="displaying-num"><?php echo $total_items; ?> items</span>
+                    <?php
+                    $page_links = paginate_links([
+                        'base'    => add_query_arg('paged', '%#%'),
+                        'format'  => '',
+                        'current' => $paged,
+                        'total'   => $total_pages,
+                        'prev_text' => '&laquo;',
+                        'next_text' => '&raquo;',
+                    ]);
+                    echo $page_links;
+                    ?>
+                </div>
+            </div>
+        <?php endif;
+    }
+
+    public function handle_clear_log() {
+        if (!current_user_can('manage_options')) {
+            wp_die('Unauthorized');
+        }
+        check_admin_referer('json_tables_clear_log');
+
+        global $wpdb;
+        $wpdb->query("TRUNCATE TABLE {$wpdb->prefix}json_tables_log");
+
+        wp_safe_redirect(admin_url('options-general.php?page=json_tables_settings&tab=request_log'));
+        exit;
     }
 
     public function add_meta_boxes() {
@@ -247,9 +352,29 @@ class JsonTables {
         return $schedules;
     }
 
+    public function create_log_table() {
+        global $wpdb;
+        $table_name = $wpdb->prefix . 'json_tables_log';
+        $charset_collate = $wpdb->get_charset_collate();
+
+        $sql = "CREATE TABLE $table_name (
+            id bigint(20) NOT NULL AUTO_INCREMENT,
+            post_id bigint(20) NOT NULL,
+            url text NOT NULL,
+            status varchar(20) NOT NULL,
+            message text NOT NULL,
+            created_at datetime NOT NULL,
+            PRIMARY KEY  (id)
+        ) $charset_collate;";
+
+        require_once(ABSPATH . 'wp-admin/includes/upgrade.php');
+        dbDelta($sql);
+    }
+
     public function activate_plugin() {
         $this->create_custom_post_type();
         flush_rewrite_rules();
+        $this->create_log_table();
         if (!wp_next_scheduled('json_tables_sync_hook')) {
             wp_schedule_event(time(), 'json_tables_interval', 'json_tables_sync_hook');
         }
@@ -278,6 +403,21 @@ class JsonTables {
         }
     }
 
+    private function log_request($post_id, $url, $status, $message = '') {
+        global $wpdb;
+        $wpdb->insert(
+            $wpdb->prefix . 'json_tables_log',
+            [
+                'post_id'    => $post_id,
+                'url'        => $url,
+                'status'     => $status,
+                'message'    => $message,
+                'created_at' => current_time('mysql'),
+            ],
+            ['%d', '%s', '%s', '%s', '%s']
+        );
+    }
+
     public function sync_json_data($post_id) {
         //$post_id = $_POST['post_id'] ?? 0;
         if (!$post_id) return;
@@ -292,37 +432,45 @@ class JsonTables {
                     $body = wp_remote_retrieve_body($response);
                     update_post_meta($post_id, 'json_data', $body);
                     update_post_meta($post_id, 'last_imported_date', current_time('mysql'));
+                    $this->log_request($post_id, $json_url, 'success');
+                } else {
+                    $this->log_request($post_id, $json_url, 'failed', $response->get_error_message());
                 }
-            } else{
+            } else {
                 $access_key = get_option('json_tables_s3_access_key');
                 $secret_key = get_option('json_tables_s3_secret_key');
                 $bucket_name = get_option('json_tables_s3_bucket_name');
                 $region = get_option('json_tables_s3_region');
 
-                // Use retrieved credentials for S3 operations
-                $s3 = new Aws\S3\S3Client([
-                    'version' => 'latest',
-                    'region' => $region,
-                    'credentials' => [
-                        'key' => $access_key,
-                        'secret' => $secret_key,
-                    ],
-                ]);
+                try {
+                    // Use retrieved credentials for S3 operations
+                    $s3 = new Aws\S3\S3Client([
+                        'version' => 'latest',
+                        'region' => $region,
+                        'credentials' => [
+                            'key' => $access_key,
+                            'secret' => $secret_key,
+                        ],
+                    ]);
 
-                // Assume $json_url contains S3 object URL
-                $response = $s3->getObject([
-                    'Bucket' => $bucket_name,
-                    'Key' => $json_url,
-                ]);
+                    // Assume $json_url contains S3 object URL
+                    $response = $s3->getObject([
+                        'Bucket' => $bucket_name,
+                        'Key' => $json_url,
+                    ]);
 
-                if ($response['Body']) {
-                    $body = $response['Body']->getContents();
-                    update_post_meta($post_id, 'json_data', $body);
-                    update_post_meta($post_id, 'last_imported_date', current_time('mysql'));
-                        }
+                    if ($response['Body']) {
+                        $body = $response['Body']->getContents();
+                        update_post_meta($post_id, 'json_data', $body);
+                        update_post_meta($post_id, 'last_imported_date', current_time('mysql'));
+                        $this->log_request($post_id, $json_url, 'success');
+                    }
+                } catch (Exception $e) {
+                    $this->log_request($post_id, $json_url, 'failed', $e->getMessage());
                 }
             }
         }
+    }
 
 
     public function render_json_table_shortcode($atts) {

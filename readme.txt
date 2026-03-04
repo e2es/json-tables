@@ -31,3 +31,11 @@
 
     = 1.0.5 =
     * Added optional table title class to JSON
+
+    = 1.0.6 =
+    * Fixed a bug where the cron jobs were not working.
+
+    = 1.0.7 =
+    * Added settings page tab navigation (Settings / Request Log).
+    * Added request logging to track every sync attempt with status and error details.
+    * Added "Clear Log" button to purge request log entries.
