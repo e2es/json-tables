@@ -134,6 +134,7 @@ class JsonTables {
             'json_tables_settings',
             'json_tables_main_section'
         );
+
     }
 
     public function json_tables_cron_interval_field_html() {
