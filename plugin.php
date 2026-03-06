@@ -44,7 +44,7 @@ class JsonTables {
         add_action('add_meta_boxes', [$this, 'add_meta_boxes']);
         add_action('save_post', [$this, 'save_post_data']);
         add_action('admin_enqueue_scripts', [$this, 'enqueue_scripts']);
-        add_action('wp_ajax_sync_json_data', [$this, 'sync_json_data']);
+        add_action('wp_ajax_sync_json_data', [$this, 'ajax_sync_json_data']);
         add_shortcode('json-table', [$this, 'render_json_table_shortcode']);
         add_filter('cron_schedules', [$this, 'add_cron_interval']);
         add_action('json_tables_sync_hook', [$this, 'perform_cron_job']);
@@ -52,6 +52,14 @@ class JsonTables {
         add_action('admin_post_json_tables_sync_now', [$this, 'handle_sync_now']);
         register_activation_hook(__FILE__, [$this, 'activate_plugin']);
         register_deactivation_hook(__FILE__, [$this, 'deactivate_plugin']);
+
+        // Reschedule cron when interval setting changes
+        add_action('update_option_json_tables_cron_interval', [$this, 'adjust_cron_job_timing']);
+
+        // Self-healing: ensure cron is always scheduled
+        if (!wp_next_scheduled('json_tables_sync_hook')) {
+            wp_schedule_event(time(), 'json_tables_interval', 'json_tables_sync_hook');
+        }
 
         // Create log table on update for existing installs
         if (get_option('json_tables_db_version') !== '1.0.7') {
@@ -301,6 +309,7 @@ class JsonTables {
 
     public function add_meta_boxes() {
         add_meta_box('json_table_data', 'JSON Table Data', [$this, 'json_table_data_callback'], 'json_table', 'normal', 'high');
+        add_meta_box('json_table_history', 'Sync History', [$this, 'json_table_history_callback'], 'json_table', 'normal', 'default');
     }
 
     public function json_table_data_callback($post) {
@@ -382,6 +391,72 @@ class JsonTables {
         <?php
     }
 
+    public function json_table_history_callback($post) {
+        global $wpdb;
+        $table_name = $wpdb->prefix . 'json_tables_log';
+
+        $per_page = 10;
+        $paged = isset($_GET['hist_paged']) ? max(1, absint($_GET['hist_paged'])) : 1;
+        $offset = ($paged - 1) * $per_page;
+
+        $total_items = (int) $wpdb->get_var($wpdb->prepare(
+            "SELECT COUNT(*) FROM $table_name WHERE post_id = %d", $post->ID
+        ));
+        $total_pages = ceil($total_items / $per_page);
+
+        $logs = $wpdb->get_results($wpdb->prepare(
+            "SELECT * FROM $table_name WHERE post_id = %d ORDER BY created_at DESC LIMIT %d OFFSET %d",
+            $post->ID, $per_page, $offset
+        ));
+
+        if (empty($logs)) {
+            echo '<p>No sync history yet.</p>';
+            return;
+        }
+        ?>
+        <table class="wp-list-table widefat fixed striped">
+            <thead>
+                <tr>
+                    <th style="width:160px;">Date</th>
+                    <th>URL</th>
+                    <th style="width:80px;">Status</th>
+                    <th>Message</th>
+                </tr>
+            </thead>
+            <tbody>
+                <?php foreach ($logs as $log) :
+                    $badge_color = $log->status === 'success' ? '#00a32a' : '#d63638';
+                ?>
+                    <tr>
+                        <td><?php echo esc_html($log->created_at); ?></td>
+                        <td style="word-break:break-all;"><?php echo esc_html($log->url); ?></td>
+                        <td><span style="display:inline-block;padding:2px 8px;border-radius:3px;color:#fff;background:<?php echo $badge_color; ?>;"><?php echo esc_html($log->status); ?></span></td>
+                        <td><?php echo esc_html($log->message); ?></td>
+                    </tr>
+                <?php endforeach; ?>
+            </tbody>
+        </table>
+        <?php if ($total_pages > 1) :
+            $base_url = get_edit_post_link($post->ID, 'raw');
+        ?>
+            <div class="tablenav bottom" style="margin-top:8px;">
+                <div class="tablenav-pages">
+                    <span class="displaying-num"><?php echo $total_items; ?> items</span>
+                    <?php
+                    echo paginate_links([
+                        'base'    => $base_url . '&hist_paged=%#%',
+                        'format'  => '',
+                        'current' => $paged,
+                        'total'   => $total_pages,
+                        'prev_text' => '&laquo;',
+                        'next_text' => '&raquo;',
+                    ]);
+                    ?>
+                </div>
+            </div>
+        <?php endif;
+    }
+
     public function enqueue_scripts($hook) {
         if ('post.php' === $hook || 'post-new.php' === $hook) {
             wp_enqueue_script('jquery');
@@ -452,10 +527,9 @@ class JsonTables {
         wp_clear_scheduled_hook('json_tables_sync_hook');
     }
 
-    // Ensure that the plugin re-adjusts the cron job timing based on updated settings
+    // Reschedule cron when interval setting changes
     public function adjust_cron_job_timing() {
-        $next_scheduled = wp_next_scheduled('json_tables_sync_hook');
-        wp_unschedule_event($next_scheduled, 'json_tables_sync_hook');
+        wp_clear_scheduled_hook('json_tables_sync_hook');
         wp_schedule_event(time(), 'json_tables_interval', 'json_tables_sync_hook');
     }
 
@@ -485,8 +559,17 @@ class JsonTables {
         );
     }
 
+    public function ajax_sync_json_data() {
+        $post_id = isset($_POST['post_id']) ? absint($_POST['post_id']) : 0;
+        if (!$post_id) {
+            wp_send_json_error('No post ID provided.');
+            return;
+        }
+        $this->sync_json_data($post_id);
+        wp_send_json_success();
+    }
+
     public function sync_json_data($post_id) {
-        //$post_id = $_POST['post_id'] ?? 0;
         if (!$post_id) return;
 
         $json_url = get_post_meta($post_id, 'json_url', true);
